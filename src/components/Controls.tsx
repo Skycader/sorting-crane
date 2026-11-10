@@ -7,7 +7,6 @@ type Props = {
   onSize: (n: number) => void;
   onSpeed: (n: number) => void;
   onGenerate: () => void;
-  onRun: () => void;
   onPlay: () => void;
   onPause: () => void;
   onStepBack: () => void;
@@ -24,7 +23,6 @@ export function Controls({
   onSize,
   onSpeed,
   onGenerate,
-  onRun,
   onPlay,
   onPause,
   onStepBack,
@@ -61,9 +59,6 @@ export function Controls({
 
         <button type="button" className="btn" onClick={onGenerate}>
           GENERATE
-        </button>
-        <button type="button" className="btn btn-accent" onClick={onRun}>
-          COMPILE & LOAD
         </button>
       </div>
 

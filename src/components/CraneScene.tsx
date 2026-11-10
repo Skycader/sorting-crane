@@ -1,15 +1,19 @@
 import {
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
   type RefObject,
 } from 'react';
 import type { Held, TimelineFrame } from '../lib/craneCompiler';
+import { placementStatus, type PlacementStatus } from '../lib/placementStatus';
 
 type Props = {
   frame: TimelineFrame;
   length: number;
+  /** Ascending sorted target — pedestal lamps use this. */
+  target: unknown[];
   /** Playback step duration — hoist/lower eases across most of it. */
   speedMs?: number;
 };
@@ -19,16 +23,6 @@ type LaserBox = { left: number; top: number; height: number };
 const ARM_RAISED = 16;
 const ARM_RAISED_STACK = 8;
 
-function valueHue(value: unknown): string {
-  const n = typeof value === 'number' ? value : String(value).length * 17;
-  const t = (n * 37) % 100;
-  if (t < 20) return 'var(--c-cyan)';
-  if (t < 40) return 'var(--c-green)';
-  if (t < 60) return 'var(--c-yellow)';
-  if (t < 80) return 'var(--c-orange)';
-  return 'var(--c-magenta)';
-}
-
 function Container({
   value,
   id,
@@ -37,14 +31,17 @@ function Container({
   id: string;
 }) {
   return (
-    <div
-      className="container"
-      style={{ '--box': valueHue(value) } as CSSProperties}
-      data-id={id}
-    >
-      <span className="container-stripe" />
+    <div className="container" data-id={id}>
       <span className="container-value">{String(value)}</span>
-      <span className="container-lock" />
+    </div>
+  );
+}
+
+function PedestalLamp({ status }: { status: PlacementStatus }) {
+  return (
+    <div className={`pedestal-lamp is-${status}`} aria-hidden>
+      <span className="pedestal-lamp-bulb" />
+      <span className="pedestal-lamp-glow" />
     </div>
   );
 }
@@ -125,12 +122,24 @@ function MagnetHead({
   );
 }
 
-export function CraneScene({ frame, length, speedMs = 220 }: Props) {
+export function CraneScene({ frame, length, target, speedMs = 220 }: Props) {
   const armMs = Math.max(160, Math.round(speedMs * 0.92));
+  const moveSteps =
+    frame.op.type === 'move' ? Math.max(1, frame.op.steps || 1) : 1;
+  // Travel fills the held move frames — no stop/start between slots.
+  const moveMs =
+    frame.op.type === 'move'
+      ? Math.max(speedMs, Math.round(speedMs * moveSteps))
+      : speedMs;
   const slotPct = 100 / Math.max(length, 1);
   const craneLeft = (frame.craneIndex + 0.5) * slotPct;
   const scanning = frame.op.type === 'scan';
   const scanIndex = frame.op.type === 'scan' ? frame.op.index : -1;
+
+  const cellValues = useMemo(
+    () => frame.cells.map((c) => (c ? c.value : null)),
+    [frame.cells],
+  );
 
   const busy =
     frame.op.type === 'grab' ||
@@ -169,9 +178,10 @@ export function CraneScene({ frame, length, speedMs = 220 }: Props) {
     const bayTop = bay.getBoundingClientRect().top;
     const belowCable = bayTop - trolleyBottom - cableH;
 
-    // Aim bay at the pad. If the pad already shows cargo AND the magnet
-    // still holds something (put leftover), stack above — don't squash.
-    let aimTop = target.getBoundingClientRect().top;
+    // Aim bay top at the stable deck-target pad (pedestal always reserved).
+    // If pad already shows cargo AND magnet still holds something, stack above.
+    const padTop = target.getBoundingClientRect().top;
+    let aimTop = padTop;
     const deckBox = target.querySelector(':scope > .container');
     const heldBox = bay.querySelector('.container');
     if (deckBox && heldBox) {
@@ -233,7 +243,12 @@ export function CraneScene({ frame, length, speedMs = 220 }: Props) {
     <div
       className="scene"
       ref={sceneRef}
-      style={{ ['--arm-ms' as string]: `${armMs}ms` }}
+      style={
+        {
+          ['--arm-ms']: `${armMs}ms`,
+          ['--move-ms']: `${moveMs}ms`,
+        } as CSSProperties
+      }
     >
       <div className="scene-sky" />
       <div className="scene-grid" />
@@ -242,7 +257,12 @@ export function CraneScene({ frame, length, speedMs = 220 }: Props) {
         <div className="gantry-rail" />
         <div
           className={`crane ${scanning ? 'is-scanning' : ''} ${busy ? 'is-working' : ''}`}
-          style={{ left: `${craneLeft}%`, ['--arm' as string]: `${armDrop}px` }}
+          style={
+            {
+              left: `${craneLeft}%`,
+              ['--arm']: `${armDrop}px`,
+            } as CSSProperties
+          }
         >
           <div className="crane-trolley" ref={trolleyRef}>
             <div className="crane-cabin" />
@@ -298,20 +318,28 @@ export function CraneScene({ frame, length, speedMs = 220 }: Props) {
               frame.releasing &&
               frame.op.type === 'place' &&
               frame.op.index === i;
+            const showCargo = !!(cell && !hideDeckCargo);
+            const lamp = showCargo
+              ? placementStatus(cellValues, target, i)
+              : null;
             return (
               <div
                 key={i}
-                className={`deck-slot ${active ? 'is-active' : ''} ${isScanTarget ? 'is-scan' : ''} ${isWorkTarget ? 'is-grab' : ''}`}
+                className={`deck-slot ${active ? 'is-active' : ''} ${isScanTarget ? 'is-scan' : ''} ${isWorkTarget ? 'is-grab' : ''} ${lamp ? `lamp-${lamp}` : ''}`}
               >
                 <div className="deck-index">{i}</div>
                 <div
                   className="deck-target"
                   ref={active || isScanTarget ? targetRef : undefined}
                 >
-                  {cell && !hideDeckCargo && (
+                  {showCargo && cell && (
                     <Container value={cell.value} id={cell.id} />
                   )}
-                  {(!cell || hideDeckCargo) && <div className="deck-empty">∅</div>}
+                  {!showCargo && <div className="deck-empty">∅</div>}
+                </div>
+                {/* Always reserve pedestal height so empty slots don't sink the arm aim. */}
+                <div className="deck-pedestal">
+                  {lamp ? <PedestalLamp status={lamp} /> : null}
                 </div>
               </div>
             );
@@ -344,7 +372,7 @@ function describe(frame: TimelineFrame): string {
     case 'hoist':
       return 'park #1 up — clear magnet face';
     case 'mark':
-      return op.label;
+      return op.label === 'done' ? 'sorted — standby' : op.label;
     case 'lower':
       return 'arm down';
     case 'raise':

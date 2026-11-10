@@ -3,7 +3,7 @@ import type { ApiEvent } from './api';
 export type Held = { value: unknown; id: string };
 
 export type CraneOp =
-  | { type: 'move'; index: number }
+  | { type: 'move'; index: number; from: number; steps: number }
   | { type: 'lower' }
   | { type: 'raise' }
   | { type: 'hoist' } // park first container up before grabbing 2nd
@@ -89,9 +89,12 @@ export function compileCraneTimeline(
   const moveTo = (index: number, sourceEvent: number) => {
     if (craneIndex === index) return;
     raiseArm(sourceEvent);
-    const step = index > craneIndex ? 1 : -1;
-    while (craneIndex !== index) {
-      push({ type: 'move', index: craneIndex + step }, sourceEvent);
+    const from = craneIndex;
+    const steps = Math.abs(index - from);
+    // One continuous slide; hold frames keep playback time ≈ travel time.
+    push({ type: 'move', index, from, steps }, sourceEvent);
+    for (let i = 1; i < steps; i++) {
+      push({ type: 'move', index, from, steps }, sourceEvent);
     }
   };
 
@@ -177,6 +180,13 @@ export function compileCraneTimeline(
       push({ type: 'raise' }, ei);
     }
   }
+
+  // Terminal idle — don't freeze on a blinking scan/laser as the last frame.
+  const endSrc = events.length ? events.length - 1 : -1;
+  raiseArm(endSrc);
+  hoisting = false;
+  releasing = false;
+  push({ type: 'mark', label: 'done' }, endSrc);
 
   return frames;
 }

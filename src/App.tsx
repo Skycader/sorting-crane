@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CodePanel } from './components/CodePanel';
 import { Controls } from './components/Controls';
 import { CraneScene } from './components/CraneScene';
@@ -9,6 +9,7 @@ import {
   initialFrame,
   type TimelineFrame,
 } from './lib/craneCompiler';
+import { sortedTarget } from './lib/placementStatus';
 import { DEFAULT_CODE, randomArray, runUserCode } from './lib/runUserCode';
 
 function boot(): { arr: unknown[]; frames: TimelineFrame[] } {
@@ -24,6 +25,11 @@ export default function App() {
   const [code, setCode] = useState(DEFAULT_CODE);
   const [error, setError] = useState<string | null>(null);
   const [frames, setFrames] = useState<TimelineFrame[]>(bootState.frames);
+  /** True when code/array changed since last successful compile. */
+  const [dirty, setDirty] = useState(true);
+  const [pendingAction, setPendingAction] = useState<'play' | 'step' | null>(
+    null,
+  );
   const [meta, setMeta] = useState({
     reads: 0,
     grabs: 0,
@@ -32,35 +38,42 @@ export default function App() {
   });
 
   const playback = usePlayback(frames, speed);
+  const { play, stepForward, stepBack, pause, seek } = playback;
 
   const frame = playback.frame ?? frames[0] ?? initialFrame(arr);
+  const target = useMemo(() => sortedTarget(arr), [arr]);
   const preview = useMemo(
     () => (frame?.cells ?? []).map((c) => (c ? c.value : '·')),
     [frame],
   );
 
-  const generate = () => {
-    const next = randomArray(size);
+  const resetArray = (next: unknown[]) => {
     setArr(next);
     setFrames([initialFrame(next)]);
     setMeta({ reads: 0, grabs: 0, puts: 0, outOfRange: 0 });
     setError(null);
+    setDirty(true);
+    setPendingAction(null);
   };
+
+  const generate = () => resetArray(randomArray(size));
 
   const onSize = (n: number) => {
     setSize(n);
-    const next = randomArray(n);
-    setArr(next);
-    setFrames([initialFrame(next)]);
-    setMeta({ reads: 0, grabs: 0, puts: 0, outOfRange: 0 });
-    setError(null);
+    resetArray(randomArray(n));
   };
 
-  const run = () => {
+  const onCodeChange = (next: string) => {
+    setCode(next);
+    setDirty(true);
+  };
+
+  const compile = useCallback((): boolean => {
     const result = runUserCode(code, arr);
     if (result.error) {
       setError(result.error);
-      return;
+      setPendingAction(null);
+      return false;
     }
     setError(null);
     const compiled = compileCraneTimeline(arr, result.api.events);
@@ -71,7 +84,39 @@ export default function App() {
       puts: result.api.puts,
       outOfRange: result.api.outOfRange,
     });
+    setDirty(false);
+    return true;
+  }, [code, arr]);
+
+  const needsCompile = dirty || frames.length <= 1;
+
+  const onPlay = () => {
+    if (playback.playing) return;
+    if (needsCompile) {
+      if (!compile()) return;
+      setPendingAction('play');
+      return;
+    }
+    play();
   };
+
+  const onStepForward = () => {
+    if (needsCompile) {
+      if (!compile()) return;
+      setPendingAction('step');
+      return;
+    }
+    stepForward();
+  };
+
+  useEffect(() => {
+    if (!pendingAction) return;
+    if (dirty || frames.length <= 1) return;
+    const action = pendingAction;
+    setPendingAction(null);
+    if (action === 'play') play();
+    else stepForward();
+  }, [pendingAction, dirty, frames, play, stepForward]);
 
   return (
     <div className="app">
@@ -91,7 +136,12 @@ export default function App() {
 
       <main className="layout">
         <section className="viz-col">
-          <CraneScene frame={frame} length={arr.length} speedMs={speed} />
+          <CraneScene
+            frame={frame}
+            length={arr.length}
+            target={target}
+            speedMs={speed}
+          />
           <Controls
             size={size}
             speed={speed}
@@ -101,17 +151,16 @@ export default function App() {
             onSize={onSize}
             onSpeed={setSpeed}
             onGenerate={generate}
-            onRun={run}
-            onPlay={playback.play}
-            onPause={playback.pause}
-            onStepBack={playback.stepBack}
-            onStepForward={playback.stepForward}
-            onSeek={playback.seek}
+            onPlay={onPlay}
+            onPause={pause}
+            onStepBack={stepBack}
+            onStepForward={onStepForward}
+            onSeek={seek}
           />
         </section>
 
         <aside className="side-col">
-          <CodePanel code={code} onChange={setCode} error={error} />
+          <CodePanel code={code} onChange={onCodeChange} error={error} />
           <Stats
             reads={frame?.apiReads ?? meta.reads}
             grabs={frame?.apiGrabs ?? meta.grabs}

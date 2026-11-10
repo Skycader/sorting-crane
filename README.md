@@ -13,8 +13,7 @@ npm run dev
 
 1. Set array size / **GENERATE**
 2. Write `const f = (api) => { ... }` in the editor
-3. **COMPILE & LOAD** — runs your function against an instrumented `Api`
-4. Play / step through the crane timeline
+3. **Play** / step — compiles your function against an instrumented `Api` when needed, then runs the crane timeline
 
 ### Api
 
