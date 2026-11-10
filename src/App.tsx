@@ -91,7 +91,7 @@ export default function App() {
 
       <main className="layout">
         <section className="viz-col">
-          <CraneScene frame={frame} length={arr.length} />
+          <CraneScene frame={frame} length={arr.length} speedMs={speed} />
           <Controls
             size={size}
             speed={speed}

@@ -18,17 +18,17 @@ npm run dev
 
 ### Api
 
-- `get(index)` — scan/read (crane laser, no lift)
-- `grab(position)` — pick container into next free claw slot (`#0` then `#1`, max 2)
-- `put(position, number)` — place claw slot `#number` (`0`|`1`) into an empty position
+- `get(index)` — scan/read (laser, no lift)
+- `grab(position)` — pick onto electromagnet stack (max 2)
+- `put(position)` — place **last grabbed** container (LIFO)
 - `getLength()` / `snapshot`
 - Counters: `reads`, `grabs`, `puts`, `outOfRange`
 
 Swap example:
 
 ```js
-api.grab(i); // #0
-api.grab(j); // #1
-api.put(i, 1);
-api.put(j, 0);
+api.grab(i);
+api.grab(j);
+api.put(i); // releases j's container first
+api.put(j);
 ```

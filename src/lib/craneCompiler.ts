@@ -6,20 +6,23 @@ export type CraneOp =
   | { type: 'move'; index: number }
   | { type: 'lower' }
   | { type: 'raise' }
-  | { type: 'hoist' } // lift held #0 into upper rack before 2nd grab
+  | { type: 'hoist' } // park first container up before grabbing 2nd
   | { type: 'scan'; index: number; value: unknown }
-  | { type: 'grab'; index: number; value: unknown; hand: 0 | 1 }
-  | { type: 'place'; index: number; value: unknown; hand: 0 | 1 }
+  | { type: 'grab'; index: number; value: unknown; depth: number }
+  | { type: 'place'; index: number; value: unknown; depth: number }
   | { type: 'mark'; label: string };
 
 export type TimelineFrame = {
   op: CraneOp;
   cells: (Held | null)[];
-  hands: [Held | null, Held | null];
+  /** Magnet stack: [first grabbed, …] — last item is released first. */
+  stack: Held[];
   craneIndex: number;
   craneLowered: boolean;
-  /** Held cargo parked in upper rack (before/while taking 2nd). */
+  /** First container parked above while picking the second. */
   hoisting: boolean;
+  magnetOn: boolean;
+  releasing: boolean;
   apiReads: number;
   apiGrabs: number;
   apiPuts: number;
@@ -30,7 +33,6 @@ function cellId(index: number, value: unknown, salt: number) {
   return `c-${index}-${String(value)}-${salt}`;
 }
 
-/** Map get / grab / put events into crane micro-ops (stepwise travel). */
 export function compileCraneTimeline(
   initial: unknown[],
   events: ApiEvent[],
@@ -39,14 +41,17 @@ export function compileCraneTimeline(
     value,
     id: cellId(index, value, index),
   }));
-  const hands: [Held | null, Held | null] = [null, null];
+  const stack: Held[] = [];
   let craneIndex = 0;
   let craneLowered = false;
   let hoisting = false;
+  let releasing = false;
   let reads = 0;
   let grabs = 0;
   let puts = 0;
   const frames: TimelineFrame[] = [];
+
+  const magnetOn = () => stack.length > 0 || craneLowered || hoisting;
 
   const push = (op: CraneOp, sourceEvent: number) => {
     if (op.type === 'move') craneIndex = op.index;
@@ -56,10 +61,12 @@ export function compileCraneTimeline(
     frames.push({
       op,
       cells: cells.map((c) => (c ? { ...c } : null)),
-      hands: [hands[0] ? { ...hands[0] } : null, hands[1] ? { ...hands[1] } : null],
+      stack: stack.map((h) => ({ ...h })),
       craneIndex,
       craneLowered,
       hoisting,
+      magnetOn: magnetOn(),
+      releasing,
       apiReads: reads,
       apiGrabs: grabs,
       apiPuts: puts,
@@ -79,7 +86,6 @@ export function compileCraneTimeline(
     push({ type: 'lower' }, sourceEvent);
   };
 
-  /** Travel index-by-index — no teleport jumps. */
   const moveTo = (index: number, sourceEvent: number) => {
     if (craneIndex === index) return;
     raiseArm(sourceEvent);
@@ -104,8 +110,8 @@ export function compileCraneTimeline(
       grabs++;
       moveTo(ev.index, ei);
 
-      // If claw already holds #0, hoist it to upper rack before 2nd grab.
-      if (ev.hand === 1 && hands[0] && !hands[1]) {
+      // Already holding one → hoist it up before attaching the next below.
+      if (stack.length === 1) {
         raiseArm(ei);
         push({ type: 'hoist' }, ei);
         push({ type: 'hoist' }, ei);
@@ -118,29 +124,58 @@ export function compileCraneTimeline(
         continue;
       }
       cells[ev.index] = null;
-      hands[ev.hand] = held;
-      // Both held → normal vertical stack (#1 above, #0 at claw).
-      if (hands[0] && hands[1]) hoisting = false;
-      push({ type: 'grab', index: ev.index, value: held.value, hand: ev.hand }, ei);
+      stack.push(held);
+      hoisting = false;
+      push({ type: 'grab', index: ev.index, value: held.value, depth: stack.length }, ei);
+      push({ type: 'grab', index: ev.index, value: held.value, depth: stack.length }, ei);
       raiseArm(ei);
       continue;
     }
 
-    // put
+    // put — LIFO pop
     puts++;
     moveTo(ev.index, ei);
     lowerArm(ei);
-    const held = hands[ev.hand];
-    if (!held) {
-      push({ type: 'mark', label: `put fail hand#${ev.hand}` }, ei);
+
+    if (stack.length === 0) {
+      push({ type: 'mark', label: `put fail @${ev.index}` }, ei);
       continue;
     }
-    hands[ev.hand] = null;
+
+    push({ type: 'lower' }, ei);
+
+    const held = stack[stack.length - 1];
     cells[ev.index] = held;
-    push({ type: 'place', index: ev.index, value: held.value, hand: ev.hand }, ei);
-    if (!hands[0] && !hands[1]) hoisting = false;
-    // If only #1 remains, it will sit at claw visually (CSS).
+    releasing = true;
+    push({
+      type: 'place',
+      index: ev.index,
+      value: held.value,
+      depth: stack.length,
+    }, ei);
+
+    stack.pop();
+    releasing = false;
+    // Leftover magnet cargo → park up so it doesn't sit on the just-placed box.
+    hoisting = stack.length > 0;
+
+    push({
+      type: 'place',
+      index: ev.index,
+      value: held.value,
+      depth: stack.length + 1,
+    }, ei);
+    push({
+      type: 'place',
+      index: ev.index,
+      value: held.value,
+      depth: stack.length + 1,
+    }, ei);
     raiseArm(ei);
+    if (hoisting) {
+      hoisting = false;
+      push({ type: 'raise' }, ei);
+    }
   }
 
   return frames;
@@ -153,10 +188,12 @@ export function initialFrame(arr: unknown[]): TimelineFrame {
       value,
       id: cellId(index, value, index),
     })),
-    hands: [null, null],
+    stack: [],
     craneIndex: 0,
     craneLowered: false,
     hoisting: false,
+    magnetOn: false,
+    releasing: false,
     apiReads: 0,
     apiGrabs: 0,
     apiPuts: 0,

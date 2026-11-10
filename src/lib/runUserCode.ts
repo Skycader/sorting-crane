@@ -50,11 +50,11 @@ export const DEFAULT_CODE = `const f = (api) => {
     }
 
     if (min !== sorted) {
-      // claw slots: #0 = first grab, #1 = second grab
-      api.grab(sorted); // #0
-      api.grab(min);    // #1
-      api.put(sorted, 1);
-      api.put(min, 0);
+      // LIFO magnet stack: last grab is put first
+      api.grab(sorted);
+      api.grab(min);
+      api.put(sorted); // releases min's container
+      api.put(min);    // releases sorted's container
     }
   }
 
